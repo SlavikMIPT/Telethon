@@ -1,13 +1,14 @@
+import asyncio
 import re
 
 from .common import EventBuilder, EventCommon, name_inner_event, _into_id_set
-from ..tl import types, custom
+from ..tl import types
 
 
 @name_inner_event
 class NewMessage(EventBuilder):
     """
-    Represents a new message event builder.
+    Occurs whenever a new text message or a message with media arrives.
 
     Args:
         incoming (`bool`, optional):
@@ -19,11 +20,11 @@ class NewMessage(EventBuilder):
             Mutually exclusive with ``incoming`` (can only set one of either).
 
         from_users (`entity`, optional):
-            Unlike `chats`, this parameter filters the *sender* of the message.
-            That is, only messages *sent by this user* will be handled. Use
-            `chats` if you want private messages with this/these users.
-            `from_users` lets you filter by messages sent by one or more users
-            across the desired chats.
+            Unlike `chats`, this parameter filters the *senders* of the
+            message. That is, only messages *sent by these users* will be
+            handled. Use `chats` if you want private messages with this/these
+            users. `from_users` lets you filter by messages sent by *one or
+            more* users across the desired chats (doesn't need a list).
 
         forwards (`bool`, optional):
             Whether forwarded messages should be handled or not. By default,
@@ -37,21 +38,20 @@ class NewMessage(EventBuilder):
             against the message, a callable function that returns ``True``
             if a message is acceptable, or a compiled regex pattern.
     """
-    def __init__(self, chats=None, *, blacklist_chats=False,
+    def __init__(self, chats=None, *, blacklist_chats=False, func=None,
                  incoming=None, outgoing=None,
                  from_users=None, forwards=None, pattern=None):
-        if incoming is not None and outgoing is None:
+        if incoming and outgoing:
+            incoming = outgoing = None  # Same as no filter
+        elif incoming is not None and outgoing is None:
             outgoing = not incoming
         elif outgoing is not None and incoming is None:
             incoming = not outgoing
-
-        if incoming and outgoing:
-            self.incoming = self.outgoing = None  # Same as no filter
         elif all(x is not None and not x for x in (incoming, outgoing)):
             raise ValueError("Don't create an event handler if you "
-                             "don't want neither incoming or outgoing!")
+                             "don't want neither incoming nor outgoing!")
 
-        super().__init__(chats=chats, blacklist_chats=blacklist_chats)
+        super().__init__(chats, blacklist_chats=blacklist_chats, func=func)
         self.incoming = incoming
         self.outgoing = outgoing
         self.from_users = from_users
@@ -68,15 +68,15 @@ class NewMessage(EventBuilder):
         # Should we short-circuit? E.g. perform no check at all
         self._no_check = all(x is None for x in (
             self.chats, self.incoming, self.outgoing, self.pattern,
-            self.from_users, self.forwards, self.from_users
+            self.from_users, self.forwards, self.from_users, self.func
         ))
 
-    async def resolve(self, client):
-        await super().resolve(client)
+    async def _resolve(self, client):
+        await super()._resolve(client)
         self.from_users = await _into_id_set(client, self.from_users)
 
     @classmethod
-    def build(cls, update):
+    def build(cls, update, others=None):
         if isinstance(update,
                       (types.UpdateNewMessage, types.UpdateNewChannelMessage)):
             if not isinstance(update.message, types.Message):
@@ -128,7 +128,6 @@ class NewMessage(EventBuilder):
             if ori.from_id == ori.to_id.user_id and not ori.fwd_from:
                 event.message.out = True
 
-        event._entities = update._entities
         return event
 
     def filter(self, event):
@@ -158,18 +157,19 @@ class NewMessage(EventBuilder):
     class Event(EventCommon):
         """
         Represents the event of a new message. This event can be treated
-        to all effects as a `telethon.tl.custom.message.Message`, so please
-        **refer to its documentation** to know what you can do with this event.
+        to all effects as a `Message <telethon.tl.custom.message.Message>`,
+        so please **refer to its documentation** to know what you can do
+        with this event.
 
         Members:
-            message (:tl:`Message`):
+            message (`Message <telethon.tl.custom.message.Message>`):
                 This is the only difference with the received
-                `telethon.tl.custom.message.Message`, and will
+                `Message <telethon.tl.custom.message.Message>`, and will
                 return the `telethon.tl.custom.message.Message` itself,
                 not the text.
 
-                See `telethon.tl.custom.message.Message` for the rest of
-                available members and methods.
+                See `Message <telethon.tl.custom.message.Message>` for
+                the rest of available members and methods.
 
             pattern_match (`obj`):
                 The resulting object from calling the passed ``pattern`` function.
@@ -191,7 +191,7 @@ class NewMessage(EventBuilder):
             self.__dict__['_init'] = False
             if not message.out and isinstance(message.to_id, types.PeerUser):
                 # Incoming message (e.g. from a bot) has to_id=us, and
-                # from_id=bot (the actual "chat" from an user's perspective).
+                # from_id=bot (the actual "chat" from a user's perspective).
                 chat_peer = types.PeerUser(message.from_id)
             else:
                 chat_peer = message.to_id
@@ -204,7 +204,8 @@ class NewMessage(EventBuilder):
 
         def _set_client(self, client):
             super()._set_client(client)
-            self.message._finish_init(client, self._entities, None)
+            m = self.message
+            m._finish_init(client, self._entities, None)
             self.__dict__['_init'] = True  # No new attributes can be set
 
         def __getattr__(self, item):

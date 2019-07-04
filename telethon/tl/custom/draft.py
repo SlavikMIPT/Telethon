@@ -5,7 +5,7 @@ from ..functions.messages import SaveDraftRequest
 from ..types import UpdateDraftMessage, DraftMessage
 from ...errors import RPCError
 from ...extensions import markdown
-from ...utils import Default, get_peer_id, get_input_peer
+from ...utils import get_peer_id, get_input_peer
 
 
 class Draft:
@@ -45,10 +45,10 @@ class Draft:
                    draft=dialog.dialog.draft, entity=dialog.entity)
 
     @classmethod
-    def _from_update(cls, client, update, entities=None):
+    def _from_update(cls, client, update, entities):
         assert isinstance(update, UpdateDraftMessage)
         return cls(client=client, peer=update.peer, draft=update.draft,
-                   entity=(entities or {}).get(get_peer_id(update.peer)))
+                   entity=entities.get(get_peer_id(update.peer)))
 
     @property
     def entity(self):
@@ -64,9 +64,8 @@ class Draft:
         """
         if not self._input_entity:
             try:
-                self._input_entity =\
-                    self._client.session.get_input_entity(self._peer)
-            except ValueError:
+                self._input_entity = self._client._entity_cache[self._peer]
+            except KeyError:
                 pass
 
         return self._input_entity
@@ -116,7 +115,7 @@ class Draft:
         return not self._text
 
     async def set_message(
-            self, text=None, reply_to=0, parse_mode=Default,
+            self, text=None, reply_to=0, parse_mode=(),
             link_preview=None):
         """
         Changes the draft message on the Telegram servers. The changes are
@@ -159,11 +158,11 @@ class Draft:
             self._raw_text = raw_text
             self.link_preview = link_preview
             self.reply_to_msg_id = reply_to
-            self.date = datetime.datetime.now()
+            self.date = datetime.datetime.now(tz=datetime.timezone.utc)
 
         return result
 
-    async def send(self, clear=True, parse_mode=Default):
+    async def send(self, clear=True, parse_mode=()):
         """
         Sends the contents of this draft to the dialog. This is just a
         wrapper around ``send_message(dialog.input_entity, *args, **kwargs)``.

@@ -1,9 +1,5 @@
 import datetime
-import json
 import os
-import sqlite3
-from base64 import b64decode
-from os.path import isfile as file_exists
 
 from telethon.tl import types
 from .memory import MemorySession, _SentFileType
@@ -13,8 +9,15 @@ from ..tl.types import (
     InputPhoto, InputDocument, PeerUser, PeerChat, PeerChannel
 )
 
+try:
+    import sqlite3
+    sqlite3_err = None
+except ImportError as e:
+    sqlite3 = None
+    sqlite3_err = type(e)
+
 EXTENSION = '.session'
-CURRENT_VERSION = 4  # database version
+CURRENT_VERSION = 5  # database version
 
 
 class SQLiteSession(MemorySession):
@@ -27,6 +30,9 @@ class SQLiteSession(MemorySession):
     """
 
     def __init__(self, session_id=None):
+        if sqlite3 is None:
+            raise sqlite3_err
+
         super().__init__()
         self.filename = ':memory:'
         self.save_entities = True
@@ -36,10 +42,6 @@ class SQLiteSession(MemorySession):
             if not self.filename.endswith(EXTENSION):
                 self.filename += EXTENSION
 
-        # Migrating from .json -> SQL
-        # TODO ^ Deprecate
-        entities = self._check_migrate_json()
-
         self._conn = None
         c = self._cursor()
         c.execute("select name from sqlite_master "
@@ -48,7 +50,7 @@ class SQLiteSession(MemorySession):
             # Tables already exist, check for the version
             c.execute("select version from version")
             version = c.fetchone()[0]
-            if version != CURRENT_VERSION:
+            if version < CURRENT_VERSION:
                 self._upgrade_database(old=version)
                 c.execute("delete from version")
                 c.execute("insert into version values (?)", (CURRENT_VERSION,))
@@ -58,7 +60,8 @@ class SQLiteSession(MemorySession):
             c.execute('select * from sessions')
             tuple_ = c.fetchone()
             if tuple_:
-                self._dc_id, self._server_address, self._port, key, = tuple_
+                self._dc_id, self._server_address, self._port, key, \
+                    self._takeout_id = tuple_
                 self._auth_key = AuthKey(data=key)
 
             c.close()
@@ -72,7 +75,8 @@ class SQLiteSession(MemorySession):
                     dc_id integer primary key,
                     server_address text,
                     port integer,
-                    auth_key blob
+                    auth_key blob,
+                    takeout_id integer
                 )"""
                 ,
                 """entities (
@@ -101,12 +105,6 @@ class SQLiteSession(MemorySession):
                 )"""
             )
             c.execute("insert into version values (?)", (CURRENT_VERSION,))
-            # Migrating from JSON -> new table and may have entities
-            if entities:
-                c.executemany(
-                    'insert or replace into entities values (?,?,?,?,?)',
-                    entities
-                )
             self._update_session_table()
             c.close()
             self.save()
@@ -115,29 +113,6 @@ class SQLiteSession(MemorySession):
         cloned = super().clone(to_instance)
         cloned.save_entities = self.save_entities
         return cloned
-
-    def _check_migrate_json(self):
-        if file_exists(self.filename):
-            try:
-                with open(self.filename, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                self.delete()  # Delete JSON file to create database
-
-                self._port = data.get('port', self._port)
-                self._server_address = \
-                    data.get('server_address', self._server_address)
-
-                if data.get('auth_key_data', None) is not None:
-                    key = b64decode(data['auth_key_data'])
-                    self._auth_key = AuthKey(data=key)
-
-                rows = []
-                for p_id, p_hash in data.get('entities', []):
-                    if p_hash is not None:
-                        rows.append((p_id, p_hash, None, None, None))
-                return rows
-            except UnicodeDecodeError:
-                return []  # No entities
 
     def _upgrade_database(self, old):
         c = self._cursor()
@@ -165,6 +140,9 @@ class SQLiteSession(MemorySession):
                 date integer,
                 seq integer
             )""")
+        if old == 4:
+            old += 1
+            c.execute("alter table sessions add column takeout_id integer")
         c.close()
 
     @staticmethod
@@ -190,6 +168,11 @@ class SQLiteSession(MemorySession):
         self._auth_key = value
         self._update_session_table()
 
+    @MemorySession.takeout_id.setter
+    def takeout_id(self, value):
+        self._takeout_id = value
+        self._update_session_table()
+
     def _update_session_table(self):
         c = self._cursor()
         # While we can save multiple rows into the sessions table
@@ -198,11 +181,12 @@ class SQLiteSession(MemorySession):
         # some more work before being able to save auth_key's for
         # multiple DCs. Probably done differently.
         c.execute('delete from sessions')
-        c.execute('insert or replace into sessions values (?,?,?,?)', (
+        c.execute('insert or replace into sessions values (?,?,?,?,?)', (
             self._dc_id,
             self._server_address,
             self._port,
-            self._auth_key.key if self._auth_key else b''
+            self._auth_key.key if self._auth_key else b'',
+            self._takeout_id
         ))
         c.close()
 
@@ -224,7 +208,8 @@ class SQLiteSession(MemorySession):
         """Saves the current session object as session_user_id.session"""
         # This is a no-op if there are no changes to commit, so there's
         # no need for us to keep track of an "unsaved changes" variable.
-        self._conn.commit()
+        if self._conn is not None:
+            self._conn.commit()
 
     def _cursor(self):
         """Asserts that the connection is open and returns a cursor"""

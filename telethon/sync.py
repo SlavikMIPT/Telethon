@@ -14,54 +14,32 @@ import asyncio
 import functools
 import inspect
 
-from async_generator import isasyncgenfunction
-
+from . import connection
+from .client.account import _TakeoutClient
 from .client.telegramclient import TelegramClient
-from .tl.custom import Draft, Dialog, MessageButton, Forward, Message
+from .tl import types, functions, custom
+from .tl.custom import (
+    Draft, Dialog, MessageButton, Forward, Button,
+    Message, InlineResult, Conversation
+)
 from .tl.custom.chatgetter import ChatGetter
 from .tl.custom.sendergetter import SenderGetter
 
 
-def _syncify_coro(t, method_name):
+def _syncify_wrap(t, method_name):
     method = getattr(t, method_name)
 
     @functools.wraps(method)
     def syncified(*args, **kwargs):
         coro = method(*args, **kwargs)
-        return (
-            coro if asyncio.get_event_loop().is_running()
-            else asyncio.get_event_loop().run_until_complete(coro)
-        )
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            return coro
+        else:
+            return loop.run_until_complete(coro)
 
-    setattr(t, method_name, syncified)
-
-
-class _SyncGen:
-    def __init__(self, loop, gen):
-        self.loop = loop
-        self.gen = gen
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        try:
-            return self.loop.run_until_complete(self.gen.__anext__())
-        except StopAsyncIteration:
-            raise StopIteration from None
-
-
-def _syncify_gen(t, method_name):
-    method = getattr(t, method_name)
-
-    @functools.wraps(method)
-    def syncified(*args, **kwargs):
-        coro = method(*args, **kwargs)
-        return (
-            coro if asyncio.get_event_loop().is_running()
-            else _SyncGen(asyncio.get_event_loop(), coro)
-        )
-
+    # Save an accessible reference to the original method
+    setattr(syncified, '__tl.sync', method)
     setattr(t, method_name, syncified)
 
 
@@ -71,14 +49,22 @@ def syncify(*types):
     into synchronous, which return either the coroutine or the result
     based on whether ``asyncio's`` event loop is running.
     """
+    # Our asynchronous generators all are `RequestIter`, which already
+    # provide a synchronous iterator variant, so we don't need to worry
+    # about asyncgenfunction's here.
     for t in types:
-        for method_name in dir(t):
-            if not method_name.startswith('_') or method_name == '__call__':
-                if inspect.iscoroutinefunction(getattr(t, method_name)):
-                    _syncify_coro(t, method_name)
-                elif isasyncgenfunction(getattr(t, method_name)):
-                    _syncify_gen(t, method_name)
+        for name in dir(t):
+            if not name.startswith('_') or name == '__call__':
+                if inspect.iscoroutinefunction(getattr(t, name)):
+                    _syncify_wrap(t, name)
 
 
-syncify(TelegramClient, Draft, Dialog, MessageButton,
-        ChatGetter, SenderGetter, Forward, Message)
+syncify(TelegramClient, _TakeoutClient, Draft, Dialog, MessageButton,
+        ChatGetter, SenderGetter, Forward, Message, InlineResult, Conversation)
+
+
+__all__ = [
+    'TelegramClient', 'Button',
+    'types', 'functions', 'custom', 'errors',
+    'events', 'utils', 'connection'
+]

@@ -20,14 +20,13 @@
 import re
 import os
 import sys
+
 sys.path.insert(0, os.path.abspath(os.curdir))
 sys.path.insert(0, os.path.abspath(os.pardir))
 
-
 root = os.path.abspath(os.path.join(__file__, os.path.pardir, os.path.pardir))
 
-tl_ref_url = 'https://lonamiwebs.github.io/Telethon'
-
+tl_ref_url = 'https://tl.telethon.dev'
 
 # -- General configuration ------------------------------------------------
 
@@ -40,8 +39,14 @@ tl_ref_url = 'https://lonamiwebs.github.io/Telethon'
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx.ext.autosummary',
+    'sphinx.ext.intersphinx',
     'custom_roles'
 ]
+
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None)
+}
 
 # Change the default role so we can avoid prefixing everything with :obj:
 default_role = "py:obj"
@@ -60,7 +65,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = 'Telethon'
-copyright = '2017, Lonami'
+copyright = '2017 - 2019, Lonami'
 author = 'Lonami'
 
 # The version info for the project you're documenting, acts as replacement for
@@ -88,10 +93,27 @@ language = None
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # The name of the Pygments (syntax highlighting) style to use.
-pygments_style = 'sphinx'
+pygments_style = 'friendly'
 
 # If true, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = False
+
+
+def skip(app, what, name, obj, would_skip, options):
+    if name.endswith('__'):
+        # We want to show special methods names, except some which add clutter
+        return name in {
+            '__init__',
+            '__abstractmethods__',
+            '__module__',
+            '__doc__'
+        }
+
+    return would_skip
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", skip)
 
 
 # -- Options for HTML output ----------------------------------------------
@@ -114,7 +136,7 @@ html_theme_options = {
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+# html_static_path = ['_static']
 
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.
@@ -185,6 +207,4 @@ texinfo_documents = [
      author, 'Telethon', 'One line description of project.',
      'Miscellaneous'),
 ]
-
-
 

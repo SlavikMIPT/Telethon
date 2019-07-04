@@ -10,7 +10,7 @@ from ..tl.types import (
     ResPQ, PQInnerData, ServerDHParamsFail, ServerDHParamsOk,
     ServerDHInnerData, ClientDHInnerData, DhGenOk, DhGenRetry, DhGenFail
 )
-from .. import helpers as utils
+from .. import helpers
 from ..crypto import AES, AuthKey, Factorization, rsa
 from ..errors import SecurityError
 from ..extensions import BinaryReader
@@ -38,7 +38,7 @@ async def do_authentication(sender):
 
     # Step 2 sending: DH Exchange
     p, q = Factorization.factorize(pq)
-    p, q = rsa.get_byte_array(min(p, q)), rsa.get_byte_array(max(p, q))
+    p, q = rsa.get_byte_array(p), rsa.get_byte_array(q)
     new_nonce = int.from_bytes(os.urandom(32), 'little', signed=True)
 
     pq_inner_data = bytes(PQInnerData(
@@ -94,7 +94,7 @@ async def do_authentication(sender):
         'Step 2.2 answer was %s' % server_dh_params
 
     # Step 3 sending: Complete DH Exchange
-    key, iv = utils.generate_key_data_from_nonce(
+    key, iv = helpers.generate_key_data_from_nonce(
         res_pq.server_nonce, new_nonce
     )
     if len(server_dh_params.encrypted_answer) % 16 != 0:
@@ -163,7 +163,9 @@ async def do_authentication(sender):
     if dh_hash != new_nonce_hash:
         raise SecurityError('Step 3 invalid new nonce hash')
 
-    assert isinstance(dh_gen, DhGenOk), 'Step 3.2 answer was %s' % dh_gen
+    if not isinstance(dh_gen, DhGenOk):
+        raise AssertionError('Step 3.2 answer was %s' % dh_gen)
+
     return auth_key, time_offset
 
 

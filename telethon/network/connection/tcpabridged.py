@@ -1,31 +1,33 @@
 import struct
 
-from .tcpfull import ConnectionTcpFull
+from .connection import Connection, PacketCodec
 
 
-class ConnectionTcpAbridged(ConnectionTcpFull):
+class AbridgedPacketCodec(PacketCodec):
+    tag = b'\xef'
+    obfuscate_tag = b'\xef\xef\xef\xef'
+
+    def encode_packet(self, data):
+        length = len(data) >> 2
+        if length < 127:
+            length = struct.pack('B', length)
+        else:
+            length = b'\x7f' + int.to_bytes(length, 3, 'little')
+        return length + data
+
+    async def read_packet(self, reader):
+        length = struct.unpack('<B', await reader.readexactly(1))[0]
+        if length >= 127:
+            length = struct.unpack(
+                '<i', await reader.readexactly(3) + b'\0')[0]
+
+        return await reader.readexactly(length << 2)
+
+
+class ConnectionTcpAbridged(Connection):
     """
     This is the mode with the lowest overhead, as it will
     only require 1 byte if the packet length is less than
     508 bytes (127 << 2, which is very common).
     """
-    async def connect(self, ip, port):
-        result = await super().connect(ip, port)
-        await self.conn.write(b'\xef')
-        return result
-
-    async def recv(self):
-        length = struct.unpack('<B', await self.read(1))[0]
-        if length >= 127:
-            length = struct.unpack('<i', await self.read(3) + b'\0')[0]
-
-        return await self.read(length << 2)
-
-    async def send(self, message):
-        length = len(message) >> 2
-        if length < 127:
-            length = struct.pack('B', length)
-        else:
-            length = b'\x7f' + int.to_bytes(length, 3, 'little')
-
-        await self.write(length + message)
+    packet_codec = AbridgedPacketCodec

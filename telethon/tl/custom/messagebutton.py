@@ -5,9 +5,16 @@ import webbrowser
 
 class MessageButton:
     """
-    Custom class that encapsulates a message providing an abstraction to
-    easily access some commonly needed features (such as the markdown text
-    or the text for a given message entity).
+    .. note::
+
+        `Message.buttons <telethon.tl.custom.message.Message.buttons>`
+        are instances of this type. If you want to **define** a reply
+        markup for e.g. sending messages, refer to `Button
+        <telethon.tl.custom.button.Button>` instead.
+
+    Custom class that encapsulates a message button providing
+    an abstraction to easily access some commonly needed features
+    (such as clicking the button itself).
 
     Attributes:
 
@@ -24,8 +31,8 @@ class MessageButton:
     @property
     def client(self):
         """
-        Returns the `telethon.telegram_client.TelegramClient` instance that
-        created this instance.
+        Returns the `telethon.client.telegramclient.TelegramClient`
+        instance that created this instance.
         """
         return self._client
 
@@ -57,7 +64,7 @@ class MessageButton:
         Emulates the behaviour of clicking this button.
 
         If it's a normal :tl:`KeyboardButton` with text, a message will be
-        sent, and the sent `telethon.tl.custom.message.Message` returned.
+        sent, and the sent `Message <telethon.tl.custom.message.Message>` returned.
 
         If it's an inline :tl:`KeyboardButtonCallback` with text and data,
         it will be "clicked" and the :tl:`BotCallbackAnswer` returned.
@@ -86,3 +93,11 @@ class MessageButton:
             ))
         elif isinstance(self.button, types.KeyboardButtonUrl):
             return webbrowser.open(self.button.url)
+        elif isinstance(self.button, types.KeyboardButtonGame):
+            req = functions.messages.GetBotCallbackAnswerRequest(
+                peer=self._chat, msg_id=self._msg_id, game=True
+            )
+            try:
+                return await self._client(req)
+            except BotTimeout:
+                return None

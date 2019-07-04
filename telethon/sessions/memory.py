@@ -32,6 +32,7 @@ class MemorySession(Session):
         self._server_address = None
         self._port = None
         self._auth_key = None
+        self._takeout_id = None
 
         self._files = {}
         self._entities = set()
@@ -62,6 +63,14 @@ class MemorySession(Session):
     def auth_key(self, value):
         self._auth_key = value
 
+    @property
+    def takeout_id(self):
+        return self._takeout_id
+
+    @takeout_id.setter
+    def takeout_id(self, value):
+        self._takeout_id = value
+
     def get_update_state(self, entity_id):
         return self._update_states.get(entity_id, None)
 
@@ -77,7 +86,8 @@ class MemorySession(Session):
     def delete(self):
         pass
 
-    def _entity_values_to_row(self, id, hash, username, phone, name):
+    @staticmethod
+    def _entity_values_to_row(id, hash, username, phone, name):
         # While this is a simple implementation it might be overrode by,
         # other classes so they don't need to implement the plural form
         # of the method. Don't remove.
@@ -90,18 +100,12 @@ class MemorySession(Session):
             p = utils.get_input_peer(e, allow_self=False)
             marked_id = utils.get_peer_id(p)
         except TypeError:
+            # Note: `get_input_peer` already checks for
+            # non-zero `access_hash`. See issues #354 and #392.
             return
 
         if isinstance(p, (InputPeerUser, InputPeerChannel)):
-            if not p.access_hash:
-                # Some users and channels seem to be returned without
-                # an 'access_hash', meaning Telegram doesn't want you
-                # to access them. This is the reason behind ensuring
-                # that the 'access_hash' is non-zero. See issue #354.
-                # Note that this checks for zero or None, see #392.
-                return
-            else:
-                p_hash = p.access_hash
+            p_hash = p.access_hash
         elif isinstance(p, InputPeerChat):
             p_hash = 0
         else:
@@ -122,6 +126,8 @@ class MemorySession(Session):
             entities = tlo
         else:
             entities = []
+            if hasattr(tlo, 'user'):
+                entities.append(tlo.user)
             if hasattr(tlo, 'chats') and utils.is_list_like(tlo.chats):
                 entities.extend(tlo.chats)
             if hasattr(tlo, 'users') and utils.is_list_like(tlo.users):
@@ -196,9 +202,13 @@ class MemorySession(Session):
             if phone:
                 result = self.get_entity_rows_by_phone(phone)
             else:
-                username, _ = utils.parse_username(key)
-                if username:
+                username, invite = utils.parse_username(key)
+                if username and not invite:
                     result = self.get_entity_rows_by_username(username)
+                else:
+                    tup = utils.resolve_invite_link(key)[1]
+                    if tup:
+                        result = self.get_entity_rows_by_id(tup, exact=False)
 
         elif isinstance(key, int):
             result = self.get_entity_rows_by_id(key, exact)
@@ -222,13 +232,13 @@ class MemorySession(Session):
     def cache_file(self, md5_digest, file_size, instance):
         if not isinstance(instance, (InputDocument, InputPhoto)):
             raise TypeError('Cannot cache %s instance' % type(instance))
-        key = (md5_digest, file_size, _SentFileType.from_type(instance))
+        key = (md5_digest, file_size, _SentFileType.from_type(type(instance)))
         value = (instance.id, instance.access_hash)
         self._files[key] = value
 
     def get_file(self, md5_digest, file_size, cls):
         key = (md5_digest, file_size, _SentFileType.from_type(cls))
         try:
-            return cls(self._files[key])
+            return cls(*self._files[key])
         except KeyError:
             return None

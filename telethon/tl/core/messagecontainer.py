@@ -1,10 +1,5 @@
-import logging
-import struct
-
 from .tlmessage import TLMessage
 from ..tlobject import TLObject
-
-__log__ = logging.getLogger(__name__)
 
 
 class MessageContainer(TLObject):
@@ -14,6 +9,16 @@ class MessageContainer(TLObject):
     # Telegram will close the connection if the payload is bigger.
     # The overhead of the container itself is subtracted.
     MAXIMUM_SIZE = 1044456 - 8
+
+    # Maximum amount of messages that can't be sent inside a single
+    # container, inclusive. Beyond this limit Telegram will respond
+    # with BAD_MESSAGE 64 (invalid container).
+    #
+    # This limit is not 100% accurate and may in some cases be higher.
+    # However, sending up to 100 requests at once in a single container
+    # is a reasonable conservative value, since it could also depend on
+    # other factors like size per request, but we cannot know this.
+    MAXIMUM_LENGTH = 100
 
     def __init__(self, messages):
         self.messages = messages
@@ -26,11 +31,6 @@ class MessageContainer(TLObject):
                     None if x is None else x.to_dict() for x in self.messages
                 ],
         }
-
-    def __bytes__(self):
-        return struct.pack(
-            '<Ii', MessageContainer.CONSTRUCTOR_ID, len(self.messages)
-        ) + b''.join(bytes(m) for m in self.messages)
 
     @classmethod
     def from_reader(cls, reader):

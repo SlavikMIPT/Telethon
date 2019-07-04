@@ -1,28 +1,34 @@
 import datetime
 
 from .common import EventBuilder, EventCommon, name_inner_event
+from .. import utils
 from ..tl import types
+from ..tl.custom.sendergetter import SenderGetter
 
 
 @name_inner_event
 class UserUpdate(EventBuilder):
     """
-    Represents an user update (gone online, offline, joined Telegram).
+    Occurs whenever a user goes online, starts typing, etc.
     """
     @classmethod
-    def build(cls, update):
+    def build(cls, update, others=None):
         if isinstance(update, types.UpdateUserStatus):
-            event = cls.Event(update.user_id,
-                              status=update.status)
-        else:
-            return
+            return cls.Event(update.user_id,
+                             status=update.status)
+        elif isinstance(update, types.UpdateChatUserTyping):
+            # Unfortunately, we can't know whether `chat_id`'s type
+            return cls.Event(update.user_id,
+                             chat_id=update.chat_id,
+                             typing=update.action)
+        elif isinstance(update, types.UpdateUserTyping):
+            return cls.Event(update.user_id,
+                             typing=update.action)
 
-        event._entities = update._entities
-        return event
-
-    class Event(EventCommon):
+    class Event(EventCommon, SenderGetter):
         """
-        Represents the event of an user status update (last seen, joined).
+        Represents the event of a user update
+        such as gone online, started typing, etc.
 
         Members:
             online (`bool`, optional):
@@ -83,8 +89,15 @@ class UserUpdate(EventBuilder):
             contact (`bool`):
                 ``True`` if what's being uploaded (selected) is a contact.
         """
-        def __init__(self, user_id, *, status=None, typing=None):
-            super().__init__(types.PeerUser(user_id))
+        def __init__(self, user_id, *, status=None, chat_id=None, typing=None):
+            if chat_id is None:
+                super().__init__(types.PeerUser(user_id))
+            else:
+                # Temporarily set the chat_peer to the ID until ._set_client.
+                # We need the client to actually figure out its type.
+                super().__init__(chat_id)
+
+            SenderGetter.__init__(self, user_id)
 
             self.online = None if status is None else \
                 isinstance(status, types.UserStatusOnline)
@@ -149,25 +162,45 @@ class UserUpdate(EventBuilder):
                 elif isinstance(typing, types.SendMessageUploadVideoAction):
                     self.uploading = self.video = True
 
+        def _set_client(self, client):
+            if isinstance(self._chat_peer, int):
+                try:
+                    chat = client._entity_cache[self._chat_peer]
+                    if isinstance(chat, types.InputPeerChat):
+                        self._chat_peer = types.PeerChat(self._chat_peer)
+                    elif isinstance(chat, types.InputPeerChannel):
+                        self._chat_peer = types.PeerChannel(self._chat_peer)
+                    else:
+                        # Should not happen
+                        self._chat_peer = types.PeerUser(self._chat_peer)
+                except KeyError:
+                    # Hope for the best. We don't know where this event
+                    # occurred but it was most likely in a channel.
+                    self._chat_peer = types.PeerChannel(self._chat_peer)
+
+            super()._set_client(client)
+            self._sender, self._input_sender = utils._get_entity_pair(
+                self.sender_id, self._entities, client._entity_cache)
+
         @property
         def user(self):
-            """Alias for `chat` (conversation)."""
-            return self.chat
+            """Alias for `sender <telethon.tl.custom.sendergetter.SenderGetter.sender>`."""
+            return self.sender
 
         async def get_user(self):
-            """Alias for `get_chat` (conversation)."""
-            return await self.get_chat()
+            """Alias for `get_sender <telethon.tl.custom.sendergetter.SenderGetter.get_sender>`."""
+            return await self.get_sender()
 
         @property
         def input_user(self):
-            """Alias for `input_chat`."""
-            return self.input_chat
+            """Alias for `input_sender <telethon.tl.custom.sendergetter.SenderGetter.input_sender>`."""
+            return self.input_sender
 
         async def get_input_user(self):
-            """Alias for `get_input_chat`."""
-            return await self.get_input_chat()
+            """Alias for `get_input_sender <telethon.tl.custom.sendergetter.SenderGetter.get_input_sender>`."""
+            return await self.get_input_sender()
 
         @property
         def user_id(self):
-            """Alias for `chat_id`."""
-            return self.chat_id
+            """Alias for `sender_id <telethon.tl.custom.sendergetter.SenderGetter.sender_id>`."""
+            return self.sender_id

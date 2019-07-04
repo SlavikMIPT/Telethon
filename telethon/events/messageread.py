@@ -6,7 +6,7 @@ from ..tl import types
 @name_inner_event
 class MessageRead(EventBuilder):
     """
-    Event fired when one or more messages have been read.
+    Occurs whenever one or more messages are read in a chat.
 
     Args:
         inbox (`bool`, optional):
@@ -14,34 +14,30 @@ class MessageRead(EventBuilder):
             messages the event will be fired. By default (``False``) only
             when messages you sent are read by someone else will fire it.
     """
-    def __init__(self, chats=None, *, blacklist_chats=None, inbox=False):
-        super().__init__(chats, blacklist_chats)
+    def __init__(
+            self, chats=None, *, blacklist_chats=False, func=None, inbox=False):
+        super().__init__(chats, blacklist_chats=blacklist_chats, func=func)
         self.inbox = inbox
 
     @classmethod
-    def build(cls, update):
+    def build(cls, update, others=None):
         if isinstance(update, types.UpdateReadHistoryInbox):
-            event = cls.Event(update.peer, update.max_id, False)
+            return cls.Event(update.peer, update.max_id, False)
         elif isinstance(update, types.UpdateReadHistoryOutbox):
-            event = cls.Event(update.peer, update.max_id, True)
+            return cls.Event(update.peer, update.max_id, True)
         elif isinstance(update, types.UpdateReadChannelInbox):
-            event = cls.Event(types.PeerChannel(update.channel_id),
-                                      update.max_id, False)
+            return cls.Event(types.PeerChannel(update.channel_id),
+                             update.max_id, False)
         elif isinstance(update, types.UpdateReadChannelOutbox):
-            event = cls.Event(types.PeerChannel(update.channel_id),
-                              update.max_id, True)
+            return cls.Event(types.PeerChannel(update.channel_id),
+                             update.max_id, True)
         elif isinstance(update, types.UpdateReadMessagesContents):
-            event = cls.Event(message_ids=update.messages,
-                              contents=True)
+            return cls.Event(message_ids=update.messages,
+                             contents=True)
         elif isinstance(update, types.UpdateChannelReadMessagesContents):
-            event = cls.Event(types.PeerChannel(update.channel_id),
-                              message_ids=update.messages,
-                              contents=True)
-        else:
-            return
-
-        event._entities = update._entities
-        return event
+            return cls.Event(types.PeerChannel(update.channel_id),
+                             message_ids=update.messages,
+                             contents=True)
 
     def filter(self, event):
         if self.inbox == event.outbox:
@@ -94,7 +90,7 @@ class MessageRead(EventBuilder):
 
         async def get_messages(self):
             """
-            Returns the list of `telethon.tl.custom.message.Message`
+            Returns the list of `Message <telethon.tl.custom.message.Message>`
             **which contents'** were read.
 
             Use :meth:`is_read` if you need to check whether a message

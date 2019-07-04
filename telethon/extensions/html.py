@@ -5,11 +5,15 @@ import struct
 from collections import deque
 from html import escape, unescape
 from html.parser import HTMLParser
+from typing import Iterable, Optional, Tuple, List
 
+from .. import helpers
 from ..tl.types import (
     MessageEntityBold, MessageEntityItalic, MessageEntityCode,
     MessageEntityPre, MessageEntityEmail, MessageEntityUrl,
-    MessageEntityTextUrl
+    MessageEntityTextUrl, MessageEntityMentionName,
+    MessageEntityUnderline, MessageEntityStrike, MessageEntityBlockquote,
+    TypeMessageEntity
 )
 
 
@@ -45,6 +49,12 @@ class HTMLToTelegramParser(HTMLParser):
             EntityType = MessageEntityBold
         elif tag == 'em' or tag == 'i':
             EntityType = MessageEntityItalic
+        elif tag == 'u':
+            EntityType = MessageEntityUnderline
+        elif tag == 'del' or tag == 's':
+            EntityType = MessageEntityStrike
+        elif tag == 'blockquote':
+            EntityType = MessageEntityBlockquote
         elif tag == 'code':
             try:
                 # If we're in the middle of a <pre> tag, this <code> tag is
@@ -98,7 +108,7 @@ class HTMLToTelegramParser(HTMLParser):
                 text = url
 
         for tag, entity in self._building_entities.items():
-            entity.length += len(text.strip('\n'))
+            entity.length += len(text)
 
         self.text += text
 
@@ -113,7 +123,7 @@ class HTMLToTelegramParser(HTMLParser):
             self.entities.append(entity)
 
 
-def parse(html):
+def parse(html: str) -> Tuple[str, List[TypeMessageEntity]]:
     """
     Parses the given HTML message and returns its stripped representation
     plus a list of the MessageEntity's that were found.
@@ -126,10 +136,12 @@ def parse(html):
 
     parser = HTMLToTelegramParser()
     parser.feed(_add_surrogate(html))
-    return _del_surrogate(parser.text), parser.entities
+    text = helpers.strip_text(parser.text, parser.entities)
+    return _del_surrogate(text), parser.entities
 
 
-def unparse(text, entities):
+def unparse(text: str, entities: Iterable[TypeMessageEntity], _offset: int = 0,
+            _length: Optional[int] = None) -> str:
     """
     Performs the reverse operation to .parse(), effectively returning HTML
     given a normal text and its MessageEntity's.
@@ -138,20 +150,29 @@ def unparse(text, entities):
     :param entities: the MessageEntity's applied to the text.
     :return: a HTML representation of the combination of both inputs.
     """
-    if not text or not entities:
+    if not text:
         return text
+    elif not entities:
+        return escape(text)
 
     text = _add_surrogate(text)
+    if _length is None:
+        _length = len(text)
     html = []
     last_offset = 0
-    for entity in entities:
-        if entity.offset > last_offset:
-            html.append(escape(text[last_offset:entity.offset]))
-        elif entity.offset < last_offset:
+    for i, entity in enumerate(entities):
+        if entity.offset > _offset + _length:
+            break
+        relative_offset = entity.offset - _offset
+        if relative_offset > last_offset:
+            html.append(escape(text[last_offset:relative_offset]))
+        elif relative_offset < last_offset:
             continue
 
         skip_entity = False
-        entity_text = escape(text[entity.offset:entity.offset + entity.length])
+        entity_text = unparse(text=text[relative_offset:relative_offset + entity.length],
+                              entities=entities[i + 1:],
+                              _offset=entity.offset, _length=entity.length)
         entity_type = type(entity)
 
         if entity_type == MessageEntityBold:
@@ -160,6 +181,12 @@ def unparse(text, entities):
             html.append('<em>{}</em>'.format(entity_text))
         elif entity_type == MessageEntityCode:
             html.append('<code>{}</code>'.format(entity_text))
+        elif entity_type == MessageEntityUnderline:
+            html.append('<u>{}</u>'.format(entity_text))
+        elif entity_type == MessageEntityStrike:
+            html.append('<del>{}</del>'.format(entity_text))
+        elif entity_type == MessageEntityBlockquote:
+            html.append('<blockquote>{}</blockquote>'.format(entity_text))
         elif entity_type == MessageEntityPre:
             if entity.language:
                 html.append(
@@ -178,8 +205,11 @@ def unparse(text, entities):
         elif entity_type == MessageEntityTextUrl:
             html.append('<a href="{}">{}</a>'
                         .format(escape(entity.url), entity_text))
+        elif entity_type == MessageEntityMentionName:
+            html.append('<a href="tg://user?id={}">{}</a>'
+                        .format(entity.user_id, entity_text))
         else:
             skip_entity = True
-        last_offset = entity.offset + (0 if skip_entity else entity.length)
-    html.append(text[last_offset:])
+        last_offset = relative_offset + (0 if skip_entity else entity.length)
+    html.append(escape(text[last_offset:]))
     return _del_surrogate(''.join(html))

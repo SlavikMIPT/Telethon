@@ -12,10 +12,11 @@ Extra supported commands are:
 
 import itertools
 import json
-import os
 import re
 import shutil
-from codecs import open
+from os import chdir
+from pathlib import Path
+from subprocess import run
 from sys import argv
 
 from setuptools import find_packages, setup
@@ -29,54 +30,52 @@ class TempWorkDir:
         self.original = None
 
     def __enter__(self):
-        self.original = os.path.abspath(os.path.curdir)
-        os.chdir(os.path.abspath(os.path.dirname(__file__)))
+        self.original = Path('.')
+        chdir(str(Path(__file__).parent))
         return self
 
     def __exit__(self, *args):
-        os.chdir(self.original)
+        chdir(str(self.original))
 
 
-GENERATOR_DIR = 'telethon_generator'
-LIBRARY_DIR = 'telethon'
+GENERATOR_DIR = Path('telethon_generator')
+LIBRARY_DIR = Path('telethon')
 
-ERRORS_IN_JSON = os.path.join(GENERATOR_DIR, 'data', 'errors.json')
-ERRORS_IN_DESC = os.path.join(GENERATOR_DIR, 'data', 'error_descriptions')
-ERRORS_OUT = os.path.join(LIBRARY_DIR, 'errors', 'rpcerrorlist.py')
+ERRORS_IN = GENERATOR_DIR / 'data/errors.csv'
+ERRORS_OUT = LIBRARY_DIR / 'errors/rpcerrorlist.py'
 
-INVALID_BM_IN = os.path.join(GENERATOR_DIR, 'data', 'invalid_bot_methods.json')
+METHODS_IN = GENERATOR_DIR / 'data/methods.csv'
 
-TLOBJECT_IN_CORE_TL = os.path.join(GENERATOR_DIR, 'data', 'mtproto_api.tl')
-TLOBJECT_IN_TL = os.path.join(GENERATOR_DIR, 'data', 'telegram_api.tl')
-TLOBJECT_OUT = os.path.join(LIBRARY_DIR, 'tl')
+# Which raw API methods are covered by *friendly* methods in the client?
+FRIENDLY_IN = GENERATOR_DIR / 'data/friendly.csv'
+
+TLOBJECT_IN_TLS = [Path(x) for x in GENERATOR_DIR.glob('data/*.tl')]
+TLOBJECT_OUT = LIBRARY_DIR / 'tl'
 IMPORT_DEPTH = 2
 
-DOCS_IN_RES = os.path.join(GENERATOR_DIR, 'data', 'html')
-DOCS_OUT = 'docs'
+DOCS_IN_RES = GENERATOR_DIR / 'data/html'
+DOCS_OUT = Path('docs')
 
 
-def generate(which):
-    from telethon_generator.parsers import parse_errors, parse_tl, find_layer
+def generate(which, action='gen'):
+    from telethon_generator.parsers import\
+        parse_errors, parse_methods, parse_tl, find_layer
+
     from telethon_generator.generators import\
         generate_errors, generate_tlobjects, generate_docs, clean_tlobjects
 
-    # Older Python versions open the file as bytes instead (3.4.2)
-    with open(INVALID_BM_IN, 'r') as f:
-        invalid_bot_methods = set(json.load(f))
+    layer = next(filter(None, map(find_layer, TLOBJECT_IN_TLS)))
+    errors = list(parse_errors(ERRORS_IN))
+    methods = list(parse_methods(METHODS_IN, FRIENDLY_IN, {e.str_code: e for e in errors}))
 
-    layer = find_layer(TLOBJECT_IN_TL)
-    errors = list(parse_errors(ERRORS_IN_JSON, ERRORS_IN_DESC))
-    tlobjects = list(itertools.chain(
-        parse_tl(TLOBJECT_IN_CORE_TL, layer, invalid_bot_methods),
-        parse_tl(TLOBJECT_IN_TL, layer, invalid_bot_methods)))
+    tlobjects = list(itertools.chain(*(
+        parse_tl(file, layer, methods) for file in TLOBJECT_IN_TLS)))
 
     if not which:
         which.extend(('tl', 'errors'))
 
-    clean = 'clean' in which
+    clean = action == 'clean'
     action = 'Cleaning' if clean else 'Generating'
-    if clean:
-        which.remove('clean')
 
     if 'all' in which:
         which.remove('all')
@@ -96,45 +95,44 @@ def generate(which):
         which.remove('errors')
         print(action, 'RPCErrors...')
         if clean:
-            if os.path.isfile(ERRORS_OUT):
-                os.remove(ERRORS_OUT)
+            if ERRORS_OUT.is_file():
+                ERRORS_OUT.unlink()
         else:
-            with open(ERRORS_OUT, 'w', encoding='utf-8') as file:
+            with ERRORS_OUT.open('w') as file:
                 generate_errors(errors, file)
 
     if 'docs' in which:
         which.remove('docs')
         print(action, 'documentation...')
         if clean:
-            if os.path.isdir(DOCS_OUT):
-                shutil.rmtree(DOCS_OUT)
+            if DOCS_OUT.is_dir():
+                shutil.rmtree(str(DOCS_OUT))
         else:
-            generate_docs(tlobjects, errors, layer, DOCS_IN_RES, DOCS_OUT)
+            generate_docs(tlobjects, methods, layer, DOCS_IN_RES, DOCS_OUT)
 
     if 'json' in which:
         which.remove('json')
         print(action, 'JSON schema...')
-        mtproto = 'mtproto_api.json'
-        telegram = 'telegram_api.json'
+        json_files = [x.with_suffix('.json') for x in TLOBJECT_IN_TLS]
         if clean:
-            for x in (mtproto, telegram):
-                if os.path.isfile(x):
-                    os.remove(x)
+            for file in json_files:
+                if file.is_file():
+                    file.unlink()
         else:
             def gen_json(fin, fout):
-                methods = []
+                meths = []
                 constructors = []
                 for tl in parse_tl(fin, layer):
                     if tl.is_function:
-                        methods.append(tl.to_dict())
+                        meths.append(tl.to_dict())
                     else:
                         constructors.append(tl.to_dict())
-                what = {'constructors': constructors, 'methods': methods}
+                what = {'constructors': constructors, 'methods': meths}
                 with open(fout, 'w') as f:
                     json.dump(what, f, indent=2)
 
-            gen_json(TLOBJECT_IN_CORE_TL, mtproto)
-            gen_json(TLOBJECT_IN_TL, telegram)
+            for fs in zip(TLOBJECT_IN_TLS, json_files):
+                gen_json(*fs)
 
     if which:
         print('The following items were not understood:', which)
@@ -144,8 +142,8 @@ def generate(which):
 
 
 def main():
-    if len(argv) >= 2 and argv[1] == 'gen':
-        generate(argv[2:])
+    if len(argv) >= 2 and argv[1] in ('gen', 'clean'):
+        generate(argv[2:], argv[1])
 
     elif len(argv) >= 2 and argv[1] == 'pypi':
         # (Re)generate the code to make sure we don't push without it
@@ -158,22 +156,17 @@ def main():
             print('Packaging for PyPi aborted, importing the module failed.')
             return
 
-        # Need python3.5 or higher, but Telethon is supposed to support 3.x
-        # Place it here since noone should be running ./setup.py pypi anyway
-        from subprocess import run
-        from shutil import rmtree
-
         for x in ('build', 'dist', 'Telethon.egg-info'):
-            rmtree(x, ignore_errors=True)
+            shutil.rmtree(x, ignore_errors=True)
         run('python3 setup.py sdist', shell=True)
         run('python3 setup.py bdist_wheel', shell=True)
         run('twine upload dist/*', shell=True)
         for x in ('build', 'dist', 'Telethon.egg-info'):
-            rmtree(x, ignore_errors=True)
+            shutil.rmtree(x, ignore_errors=True)
 
     else:
         # e.g. install from GitHub
-        if os.path.isdir(GENERATOR_DIR):
+        if GENERATOR_DIR.is_dir():
             generate(['tl', 'errors'])
 
         # Get the long description from the README file
@@ -222,8 +215,7 @@ def main():
             packages=find_packages(exclude=[
                 'telethon_*', 'run_tests.py', 'try_telethon.py'
             ]),
-            install_requires=['pyaes', 'rsa',
-                              'async_generator'],
+            install_requires=['pyaes', 'rsa'],
             extras_require={
                 'cryptg': ['cryptg']
             }

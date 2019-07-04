@@ -12,7 +12,8 @@ from ..tl.custom.sendergetter import SenderGetter
 @name_inner_event
 class InlineQuery(EventBuilder):
     """
-    Represents an inline query event (when someone writes ``'@my_bot query'``).
+    Occurs whenever you sign in as a bot and a user
+    sends an inline query such as ``@bot query``.
 
     Args:
         users (`entity`, optional):
@@ -31,8 +32,9 @@ class InlineQuery(EventBuilder):
             against the message, a callable function that returns ``True``
             if a message is acceptable, or a compiled regex pattern.
     """
-    def __init__(self, users=None, *, blacklist_users=False, pattern=None):
-        super().__init__(chats=users, blacklist_chats=blacklist_users)
+    def __init__(
+            self, users=None, *, blacklist_users=False, func=None, pattern=None):
+        super().__init__(users, blacklist_chats=blacklist_users, func=func)
 
         if isinstance(pattern, str):
             self.pattern = re.compile(pattern).match
@@ -44,14 +46,9 @@ class InlineQuery(EventBuilder):
             raise TypeError('Invalid pattern type given')
 
     @classmethod
-    def build(cls, update):
+    def build(cls, update, others=None):
         if isinstance(update, types.UpdateBotInlineQuery):
-            event = cls.Event(update)
-        else:
-            return
-
-        event._entities = update._entities
-        return event
+            return cls.Event(update)
 
     def filter(self, event):
         if self.pattern:
@@ -70,18 +67,24 @@ class InlineQuery(EventBuilder):
             query (:tl:`UpdateBotCallbackQuery`):
                 The original :tl:`UpdateBotCallbackQuery`.
 
+                Make sure to access the `text` of the query if
+                that's what you want instead working with this.
+
             pattern_match (`obj`, optional):
                 The resulting object from calling the passed ``pattern``
                 function, which is ``re.compile(...).match`` by default.
         """
         def __init__(self, query):
             super().__init__(chat_peer=types.PeerUser(query.user_id))
+            SenderGetter.__init__(self, query.user_id)
             self.query = query
             self.pattern_match = None
             self._answered = False
-            self._sender_id = query.user_id
-            self._input_sender = None
-            self._sender = None
+
+        def _set_client(self, client):
+            super()._set_client(client)
+            self._sender, self._input_sender = utils._get_entity_pair(
+                self.sender_id, self._entities, client._entity_cache)
 
         @property
         def id(self):
@@ -100,7 +103,8 @@ class InlineQuery(EventBuilder):
         @property
         def offset(self):
             """
-            ???
+            The string the user's client used as an offset for the query.
+            This will either be empty or equal to offsets passed to `answer`.
             """
             return self.query.offset
 
@@ -116,14 +120,14 @@ class InlineQuery(EventBuilder):
         @property
         def builder(self):
             """
-            Returns a new `inline result builder
-            <telethon.tl.custom.inline.InlineBuilder>`.
+            Returns a new `InlineBuilder
+            <telethon.tl.custom.inlinebuilder.InlineBuilder>` instance.
             """
             return custom.InlineBuilder(self._client)
 
         async def answer(
                 self, results=None, cache_time=0, *,
-                gallery=False, private=False,
+                gallery=False, next_offset=None, private=False,
                 switch_pm=None, switch_pm_param=''):
             """
             Answers the inline query with the given results.
@@ -133,12 +137,18 @@ class InlineQuery(EventBuilder):
                     A list of :tl:`InputBotInlineResult` to use.
                     You should use `builder` to create these:
 
-                    .. code-block: python
+                    .. code-block:: python
 
                         builder = inline.builder
                         r1 = builder.article('Be nice', text='Have a nice day')
                         r2 = builder.article('Be bad', text="I don't like you")
                         await inline.answer([r1, r2])
+
+                    You can send up to 50 results as documented in
+                    https://core.telegram.org/bots/api#answerinlinequery.
+                    Sending more will raise ``ResultsTooMuchError``,
+                    and you should consider using `next_offset` to
+                    paginate them.
 
                 cache_time (`int`, optional):
                     For how long this result should be cached on
@@ -146,6 +156,10 @@ class InlineQuery(EventBuilder):
 
                 gallery (`bool`, optional):
                     Whether the results should show as a gallery (grid) or not.
+                
+                next_offset (`str`, optional):
+                    The offset the client will send when the user scrolls the 
+                    results and it repeats the request.
 
                 private (`bool`, optional):
                     Whether the results should be cached by Telegram
@@ -158,13 +172,38 @@ class InlineQuery(EventBuilder):
                 switch_pm_param (`str`, optional):
                     Optional parameter to start the bot with if
                     `switch_pm` was used.
+
+            Example:
+
+                .. code-block:: python
+
+                    @bot.on(events.InlineQuery)
+                    async def handler(event):
+                        builder = event.builder
+
+                        rev_text = event.text[::-1]
+                        await event.answer([
+                            builder.article('Reverse text', text=rev_text),
+                            builder.photo('/path/to/photo.jpg')
+                        ])
             """
             if self._answered:
                 return
 
-            results = [self._as_awaitable(x) for x in results]
-            done, _ = await asyncio.wait(results)
-            results = [x.result() for x in done]
+            if results:
+                futures = [self._as_future(x, self._client.loop)
+                           for x in results]
+
+                await asyncio.wait(futures, loop=self._client.loop)
+
+                # All futures will be in the `done` *set* that `wait` returns.
+                #
+                # Precisely because it's a `set` and not a `list`, it
+                # will not preserve the order, but since all futures
+                # completed we can use our original, ordered `list`.
+                results = [x.result() for x in futures]
+            else:
+                results = []
 
             if switch_pm:
                 switch_pm = types.InlineBotSwitchPM(switch_pm, switch_pm_param)
@@ -175,16 +214,17 @@ class InlineQuery(EventBuilder):
                     results=results,
                     cache_time=cache_time,
                     gallery=gallery,
+                    next_offset=next_offset,
                     private=private,
                     switch_pm=switch_pm
                 )
             )
 
         @staticmethod
-        def _as_awaitable(obj):
+        def _as_future(obj, loop):
             if inspect.isawaitable(obj):
-                return obj
+                return asyncio.ensure_future(obj, loop=loop)
 
-            f = asyncio.Future()
+            f = loop.create_future()
             f.set_result(obj)
             return f

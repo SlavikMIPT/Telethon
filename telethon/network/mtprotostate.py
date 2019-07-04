@@ -1,16 +1,14 @@
-import logging
 import os
 import struct
 import time
 from hashlib import sha256
 
 from ..crypto import AES
-from ..errors import SecurityError, BrokenAuthKeyError
+from ..errors import SecurityError, InvalidBufferError
 from ..extensions import BinaryReader
 from ..tl.core import TLMessage
-from ..tl.tlobject import TLRequest
-
-__log__ = logging.getLogger(__name__)
+from ..tl.functions import InvokeAfterMsgRequest
+from ..tl.core.gzippacked import GzipPacked
 
 
 class MTProtoState:
@@ -27,28 +25,32 @@ class MTProtoState:
     for all these is not a good idea as each need their own authkey, and
     the concept of "copying" sessions with the unnecessary entities or
     updates state for these connections doesn't make sense.
+
+    While it would be possible to have a `MTProtoPlainState` that does no
+    encryption so that it was usable through the `MTProtoLayer` and thus
+    avoid the need for a `MTProtoPlainSender`, the `MTProtoLayer` is more
+    focused to efficiency and this state is also more advanced (since it
+    supports gzipping and invoking after other message IDs). There are too
+    many methods that would be needed to make it convenient to use for the
+    authentication process, at which point the `MTProtoPlainSender` is better.
     """
-    def __init__(self, auth_key):
-        # Session IDs can be random on every connection
-        self.id = struct.unpack('q', os.urandom(8))[0]
+    def __init__(self, auth_key, loggers):
         self.auth_key = auth_key
+        self._log = loggers[__name__]
         self.time_offset = 0
         self.salt = 0
+
+        self.id = self._sequence = self._last_msg_id = None
+        self.reset()
+
+    def reset(self):
+        """
+        Resets the state.
+        """
+        # Session IDs can be random on every connection
+        self.id = struct.unpack('q', os.urandom(8))[0]
         self._sequence = 0
         self._last_msg_id = 0
-
-    def create_message(self, obj, after=None):
-        """
-        Creates a new `telethon.tl.tl_message.TLMessage` from
-        the given `telethon.tl.tlobject.TLObject` instance.
-        """
-        return TLMessage(
-            msg_id=self._get_new_msg_id(),
-            seq_no=self._get_seq_no(isinstance(obj, TLRequest)),
-            obj=obj,
-            after_id=after.msg_id if after else None,
-            out=True  # Pre-convert the request into bytes
-        )
 
     def update_message_id(self, message):
         """
@@ -73,14 +75,31 @@ class MTProtoState:
 
         return aes_key, aes_iv
 
-    def pack_message(self, message):
+    def write_data_as_message(self, buffer, data, content_related,
+                              *, after_id=None):
         """
-        Packs the given `telethon.tl.tl_message.TLMessage` using the
-        current authorization key following MTProto 2.0 guidelines.
+        Writes a message containing the given data into buffer.
 
-        See https://core.telegram.org/mtproto/description.
+        Returns the message id.
         """
-        data = struct.pack('<qq', self.salt, self.id) + bytes(message)
+        msg_id = self._get_new_msg_id()
+        seq_no = self._get_seq_no(content_related)
+        if after_id is None:
+            body = GzipPacked.gzip_if_smaller(content_related, data)
+        else:
+            body = GzipPacked.gzip_if_smaller(content_related,
+                bytes(InvokeAfterMsgRequest(after_id, data)))
+
+        buffer.write(struct.pack('<qii', msg_id, seq_no, len(body)))
+        buffer.write(body)
+        return msg_id
+
+    def encrypt_message_data(self, data):
+        """
+        Encrypts the given message data using the current authorization key
+        following MTProto 2.0 guidelines core.telegram.org/mtproto/description.
+        """
+        data = struct.pack('<qq', self.salt, self.id) + data
         padding = os.urandom(-(len(data) + 12) % 16 + 12)
 
         # Being substr(what, offset, length); x = 0 for client
@@ -96,16 +115,14 @@ class MTProtoState:
         return (key_id + msg_key +
                 AES.encrypt_ige(data + padding, aes_key, aes_iv))
 
-    def unpack_message(self, body):
+    def decrypt_message_data(self, body):
         """
-        Inverse of `pack_message` for incoming server messages.
+        Inverse of `encrypt_message_data` for incoming server messages.
         """
         if len(body) < 8:
-            if body == b'l\xfe\xff\xff':
-                raise BrokenAuthKeyError()
-            else:
-                raise BufferError("Can't decode packet ({})".format(body))
+            raise InvalidBufferError(body)
 
+        # TODO Check salt, session_id and sequence_number
         key_id = struct.unpack('<Q', body[:8])[0]
         if key_id != self.auth_key.key_id:
             raise SecurityError('Server replied with an invalid auth key')
@@ -166,7 +183,7 @@ class MTProtoState:
 
         if self.time_offset != old:
             self._last_msg_id = 0
-            __log__.debug(
+            self._log.debug(
                 'Updated time offset (old offset %d, bad %d, good %d, new %d)',
                 old, bad, correct_msg_id, self.time_offset
             )

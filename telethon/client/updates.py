@@ -1,66 +1,96 @@
 import asyncio
-import inspect
 import itertools
-import logging
 import random
 import time
+import typing
 
-from .users import UserMethods
 from .. import events, utils, errors
+from ..events.common import EventBuilder, EventCommon
 from ..tl import types, functions
 
-__log__ = logging.getLogger(__name__)
+if typing.TYPE_CHECKING:
+    from .telegramclient import TelegramClient
 
 
-class UpdateMethods(UserMethods):
+class UpdateMethods:
 
     # region Public methods
 
-    async def _run_until_disconnected(self):
+    async def _run_until_disconnected(self: 'TelegramClient'):
         try:
-            await self.disconnected
+            # Make a high-level request to notify that we want updates
+            await self(functions.updates.GetStateRequest())
+            return await self.disconnected
         except KeyboardInterrupt:
+            pass
+        finally:
             await self.disconnect()
 
-    def run_until_disconnected(self):
+    def run_until_disconnected(self: 'TelegramClient'):
         """
-        Runs the event loop until `disconnect` is called or if an error
-        while connecting/sending/receiving occurs in the background. In
-        the latter case, said error will ``raise`` so you have a chance
-        to ``except`` it on your own code.
+        Runs the event loop until the library is disconnected.
+
+        It also notifies Telegram that we want to receive updates
+        as described in https://core.telegram.org/api/updates.
+
+        Manual disconnections can be made by calling `disconnect()
+        <telethon.client.telegrambaseclient.TelegramBaseClient.disconnect>`
+        or sending a ``KeyboardInterrupt`` (e.g. by pressing ``Ctrl+C`` on
+        the console window running the script).
+
+        If a disconnection error occurs (i.e. the library fails to reconnect
+        automatically), said error will be raised through here, so you have a
+        chance to ``except`` it on your own code.
 
         If the loop is already running, this method returns a coroutine
         that you should await on your own code.
+
+        .. note::
+
+            If you want to handle ``KeyboardInterrupt`` in your code,
+            simply run the event loop in your code too in any way, such as
+            ``loop.run_forever()`` or ``await client.disconnected`` (e.g.
+            ``loop.run_until_complete(client.disconnected)``).
+
+        Example
+            .. code-block:: python
+
+                # Blocks the current task here until a disconnection occurs.
+                #
+                # You will still receive updates, since this prevents the
+                # script from exiting.
+                client.run_until_disconnected()
         """
         if self.loop.is_running():
             return self._run_until_disconnected()
         try:
-            return self.loop.run_until_complete(self.disconnected)
+            return self.loop.run_until_complete(self._run_until_disconnected())
         except KeyboardInterrupt:
-            # Importing the magic sync module turns disconnect into sync.
-            # TODO Maybe disconnect() should not need the magic module...
-            if inspect.iscoroutinefunction(self.disconnect):
-                self.loop.run_until_complete(self.disconnect())
-            else:
-                self.disconnect()
+            pass
+        finally:
+            # No loop.run_until_complete; it's already syncified
+            self.disconnect()
 
-    def on(self, event):
+    def on(self: 'TelegramClient', event: EventBuilder):
         """
-        Decorator helper method around `add_event_handler`. Example:
+        Decorator used to `add_event_handler` more conveniently.
 
-        >>> from telethon import TelegramClient, events
-        >>> client = TelegramClient(...)
-        >>>
-        >>> @client.on(events.NewMessage)
-        ... async def handler(event):
-        ...     ...
-        ...
-        >>>
 
-        Args:
+        Arguments
             event (`_EventBuilder` | `type`):
                 The event builder class or instance to be used,
                 for instance ``events.NewMessage``.
+
+        Example
+            .. code-block:: python
+
+                from telethon import TelegramClient, events
+                client = TelegramClient(...)
+
+                # Here we use client.on
+                @client.on(events.NewMessage)
+                async def handler(event):
+                    ...
         """
         def decorator(f):
             self.add_event_handler(f, event)
@@ -68,13 +98,22 @@ class UpdateMethods(UserMethods):
 
         return decorator
 
-    def add_event_handler(self, callback, event=None):
+    def add_event_handler(
+            self: 'TelegramClient',
+            callback: callable,
+            event: EventBuilder = None):
         """
-        Registers the given callback to be called on the specified event.
+        Registers a new event handler callback.
 
-        Args:
+        The callback will be called when the specified event occurs.
+
+        Arguments
             callback (`callable`):
                 The callable function accepting one parameter to be used.
+
+                Note that if you have used `telethon.events.register` in
+                the callback, ``event`` will be ignored, and instead the
+                events you previously registered will be used.
 
             event (`_EventBuilder` | `type`, optional):
                 The event builder class or instance to be used,
@@ -83,22 +122,55 @@ class UpdateMethods(UserMethods):
                 If left unspecified, `telethon.events.raw.Raw` (the
                 :tl:`Update` objects with no further processing) will
                 be passed instead.
+
+        Example
+            .. code-block:: python
+
+                from telethon import TelegramClient, events
+                client = TelegramClient(...)
+
+                async def handler(event):
+                    ...
+
+                client.add_event_handler(handler, events.NewMessage)
         """
+        builders = events._get_handlers(callback)
+        if builders is not None:
+            for event in builders:
+                self._event_builders.append((event, callback))
+            return
+
         if isinstance(event, type):
             event = event()
         elif not event:
             event = events.Raw()
 
-        self._events_pending_resolve.append(event)
-        self._event_builders_count[type(event)] += 1
         self._event_builders.append((event, callback))
 
-    def remove_event_handler(self, callback, event=None):
+    def remove_event_handler(
+            self: 'TelegramClient',
+            callback: callable,
+            event: EventBuilder = None) -> int:
         """
-        Inverse operation of :meth:`add_event_handler`.
+        Inverse operation of `add_event_handler()`.
 
         If no event is given, all events for this callback are removed.
         Returns how many callbacks were removed.
+
+        Example
+            .. code-block:: python
+
+                @client.on(events.Raw)
+                @client.on(events.NewMessage)
+                async def handler(event):
+                    ...
+
+                # Removes only the "Raw" handling
+                # "handler" will still receive "events.NewMessage"
+                client.remove_event_handler(handler, events.Raw)
+
+                # "handler" will stop receiving anything
+                client.remove_event_handler(handler)
         """
         found = 0
         if event and not isinstance(event, type):
@@ -109,50 +181,63 @@ class UpdateMethods(UserMethods):
             i -= 1
             ev, cb = self._event_builders[i]
             if cb == callback and (not event or isinstance(ev, event)):
-                type_ev = type(ev)
-                self._event_builders_count[type_ev] -= 1
-                if not self._event_builders_count[type_ev]:
-                    del self._event_builders_count[type_ev]
-
                 del self._event_builders[i]
                 found += 1
 
         return found
 
-    def list_event_handlers(self):
+    def list_event_handlers(self: 'TelegramClient')\
+            -> 'typing.Sequence[typing.Tuple[callable, EventBuilder]]':
         """
-        Lists all added event handlers, returning a list of pairs
-        consisting of (callback, event).
+        Lists all registered event handlers.
+
+        Returns
+            A list of pairs consisting of ``(callback, event)``.
+
+        Example
+            .. code-block:: python
+
+                @client.on(events.NewMessage(pattern='hello'))
+                async def on_greeting(event):
+                    '''Greets someone'''
+                    await event.reply('Hi')
+
+                for callback, event in client.list_event_handlers():
+                    print(id(callback), type(event))
         """
         return [(callback, event) for event, callback in self._event_builders]
 
-    async def catch_up(self):
-        state = self.session.get_update_state(0)
-        if not state or not state.pts:
+    async def catch_up(self: 'TelegramClient'):
+        """
+        "Catches up" on the missed updates while the client was offline.
+        You should call this method after registering the event handlers
+        so that the updates it loads can by processed by your script.
+
+        This can also be used to forcibly fetch new updates if there are any.
+
+        Example
+            .. code-block:: python
+
+                client.catch_up()
+        """
+        pts, date = self._state_cache[None]
+        if not pts:
             return
 
         self.session.catching_up = True
         try:
             while True:
                 d = await self(functions.updates.GetDifferenceRequest(
-                    state.pts, state.date, state.qts))
-                if isinstance(d, types.updates.DifferenceEmpty):
-                    state.date = d.date
-                    state.seq = d.seq
-                    break
-                elif isinstance(d, (types.updates.DifferenceSlice,
-                                    types.updates.Difference)):
+                    pts, date, 0
+                ))
+                if isinstance(d, (types.updates.DifferenceSlice,
+                                  types.updates.Difference)):
                     if isinstance(d, types.updates.Difference):
                         state = d.state
-                    elif d.intermediate_state.pts > state.pts:
-                        state = d.intermediate_state
                     else:
-                        # TODO Figure out why other applications can rely on
-                        # using always the intermediate_state to eventually
-                        # reach a DifferenceEmpty, but that leads to an
-                        # infinite loop here (so check against old pts to stop)
-                        break
+                        state = d.intermediate_state
 
+                    pts, date = state.pts, state.date
                     self._handle_update(types.Updates(
                         users=d.users,
                         chats=d.chats,
@@ -163,49 +248,78 @@ class UpdateMethods(UserMethods):
                             for m in d.new_messages
                         ]
                     ))
-                elif isinstance(d, types.updates.DifferenceTooLong):
+
+                    # TODO Implement upper limit (max_pts)
+                    # We don't want to fetch updates we already know about.
+                    #
+                    # We may still get duplicates because the Difference
+                    # contains a lot of updates and presumably only has
+                    # the state for the last one, but at least we don't
+                    # unnecessarily fetch too many.
+                    #
+                    # updates.getDifference's pts_total_limit seems to mean
+                    # "how many pts is the request allowed to return", and
+                    # if there is more than that, it returns "too long" (so
+                    # there would be duplicate updates since we know about
+                    # some). This can be used to detect collisions (i.e.
+                    # it would return an update we have already seen).
+                else:
+                    if isinstance(d, types.updates.DifferenceEmpty):
+                        date = d.date
+                    elif isinstance(d, types.updates.DifferenceTooLong):
+                        pts = d.pts
                     break
+        except (ConnectionError, asyncio.CancelledError):
+            pass
         finally:
-            self.session.set_update_state(0, state)
+            # TODO Save new pts to session
+            self._state_cache._pts_date = (pts, date)
             self.session.catching_up = False
 
     # endregion
 
     # region Private methods
 
-    def _handle_update(self, update):
+    # It is important to not make _handle_update async because we rely on
+    # the order that the updates arrive in to update the pts and date to
+    # be always-increasing. There is also no need to make this async.
+    def _handle_update(self: 'TelegramClient', update):
         self.session.process_entities(update)
+        self._entity_cache.add(update)
+
         if isinstance(update, (types.Updates, types.UpdatesCombined)):
             entities = {utils.get_peer_id(x): x for x in
                         itertools.chain(update.users, update.chats)}
             for u in update.updates:
-                u._entities = entities
-                self._handle_update(u)
+                self._process_update(u, update.updates, entities=entities)
         elif isinstance(update, types.UpdateShort):
-            self._handle_update(update.update)
+            self._process_update(update.update, None)
         else:
-            update._entities = getattr(update, '_entities', {})
-            if self._updates_queue is None:
-                self._loop.create_task(self._dispatch_update(update))
-            else:
-                self._updates_queue.put_nowait(update)
-                if not self._dispatching_updates_queue.is_set():
-                    self._dispatching_updates_queue.set()
-                    self._loop.create_task(self._dispatch_queue_updates())
+            self._process_update(update, None)
 
-        need_diff = False
-        if hasattr(update, 'pts') and update.pts is not None:
-            if self._state.pts and (update.pts - self._state.pts) > 1:
-                need_diff = True
-            self._state.pts = update.pts
-        if hasattr(update, 'date'):
-            self._state.date = update.date
-        if hasattr(update, 'seq'):
-            self._state.seq = update.seq
+        self._state_cache.update(update)
 
-        # TODO make use of need_diff
+    def _process_update(self: 'TelegramClient', update, others, entities=None):
+        update._entities = entities or {}
 
-    async def _update_loop(self):
+        # This part is somewhat hot so we don't bother patching
+        # update with channel ID/its state. Instead we just pass
+        # arguments which is faster.
+        channel_id = self._state_cache.get_channel_id(update)
+        args = (update, others, channel_id, self._state_cache[channel_id])
+        if self._dispatching_updates_queue is None:
+            task = self._loop.create_task(self._dispatch_update(*args))
+            self._updates_queue.add(task)
+            task.add_done_callback(lambda _: self._updates_queue.discard(task))
+        else:
+            self._updates_queue.put_nowait(args)
+            if not self._dispatching_updates_queue.is_set():
+                self._dispatching_updates_queue.set()
+                self._loop.create_task(self._dispatch_queue_updates())
+
+        self._state_cache.update(update)
+
+    async def _update_loop(self: 'TelegramClient'):
         # Pings' ID don't really need to be secure, just "random"
         rnd = lambda: random.randrange(-2**63, 2**63)
         while self.is_connected():
@@ -217,14 +331,16 @@ class UpdateMethods(UserMethods):
             except asyncio.TimeoutError:
                 pass
             except asyncio.CancelledError:
-                await self.disconnect()
                 return
-            except Exception as e:
+            except Exception:
                 continue  # Any disconnected exception should be ignored
 
             # We also don't really care about their result.
             # Just send them periodically.
-            self._sender.send(functions.PingRequest(rnd()))
+            try:
+                self._sender.send(functions.PingRequest(rnd()))
+            except (ConnectionError, asyncio.CancelledError):
+                return
 
             # Entities and cached files are not saved when they are
             # inserted because this is a rather expensive operation
@@ -243,64 +359,189 @@ class UpdateMethods(UserMethods):
                     # long without being logged in...?
                     continue
 
-                await self(functions.updates.GetStateRequest())
+                try:
+                    await self(functions.updates.GetStateRequest())
+                except (ConnectionError, asyncio.CancelledError):
+                    return
 
-    async def _dispatch_queue_updates(self):
+    async def _dispatch_queue_updates(self: 'TelegramClient'):
         while not self._updates_queue.empty():
-            await self._dispatch_update(self._updates_queue.get_nowait())
+            await self._dispatch_update(*self._updates_queue.get_nowait())
 
         self._dispatching_updates_queue.clear()
 
-    async def _dispatch_update(self, update):
-        if self._events_pending_resolve:
-            if self._event_resolve_lock.locked():
-                async with self._event_resolve_lock:
-                    pass
-            else:
-                async with self._event_resolve_lock:
-                    for event in self._events_pending_resolve:
-                        await event.resolve(self)
+    async def _dispatch_update(self: 'TelegramClient', update, others, channel_id, pts_date):
+        if not self._entity_cache.ensure_cached(update):
+            # We could add a lock to not fetch the same pts twice if we are
+            # already fetching it. However this does not happen in practice,
+            # which makes sense, because different updates have different pts.
+            if self._state_cache.update(update, check_only=True):
+                # If the update doesn't have pts, fetching won't do anything.
+                # For example, UpdateUserStatus or UpdateChatUserTyping.
+                await self._get_difference(update, channel_id, pts_date)
 
-            self._events_pending_resolve.clear()
+        built = EventBuilderDict(self, update, others)
+        for conv_set in self._conversations.values():
+            for conv in conv_set:
+                ev = built[events.NewMessage]
+                if ev:
+                    conv._on_new_message(ev)
 
-        # TODO We can improve this further
-        # If we had a way to get all event builders for
-        # a type instead looping over them all always.
-        built = {builder: builder.build(update)
-                 for builder in self._event_builders_count}
+                ev = built[events.MessageEdited]
+                if ev:
+                    conv._on_edit(ev)
+
+                ev = built[events.MessageRead]
+                if ev:
+                    conv._on_read(ev)
+
+                if conv._custom:
+                    await conv._check_custom(built)
 
         for builder, callback in self._event_builders:
             event = built[type(builder)]
-            if not event or not builder.filter(event):
+            if not event:
                 continue
 
-            if hasattr(event, '_set_client'):
-                event._set_client(self)
-            else:
-                event._client = self
+            if not builder.resolved:
+                await builder.resolve(self)
 
-            event.original_update = update
+            if not builder.filter(event):
+                continue
+
             try:
                 await callback(event)
+            except errors.AlreadyInConversationError:
+                name = getattr(callback, '__name__', repr(callback))
+                self._log[__name__].debug(
+                    'Event handler "%s" already has an open conversation, '
+                    'ignoring new one', name)
             except events.StopPropagation:
                 name = getattr(callback, '__name__', repr(callback))
-                __log__.debug(
+                self._log[__name__].debug(
                     'Event handler "%s" stopped chain of propagation '
                     'for event %s.', name, type(event).__name__
                 )
                 break
-            except Exception:
-                name = getattr(callback, '__name__', repr(callback))
-                __log__.exception('Unhandled exception on %s', name)
+            except Exception as e:
+                if not isinstance(e, asyncio.CancelledError) or self.is_connected():
+                    name = getattr(callback, '__name__', repr(callback))
+                    self._log[__name__].exception('Unhandled exception on %s',
+                                                  name)
 
-    async def _handle_auto_reconnect(self):
-        # Upon reconnection, we want to send getState
-        # for Telegram to keep sending us updates.
+    async def _get_difference(self: 'TelegramClient', update, channel_id, pts_date):
+        """
+        Get the difference for this `channel_id` if any, then load entities.
+
+        Calls :tl:`updates.getDifference`, which fills the entities cache
+        (always done by `__call__`) and lets us know about the full entities.
+        """
+        # Fetch since the last known pts/date before this update arrived,
+        # in order to fetch this update at full, including its entities.
+        self._log[__name__].debug('Getting difference for entities '
+                                  'for %r', update.__class__)
+        if channel_id:
+            try:
+                where = await self.get_input_entity(channel_id)
+            except ValueError:
+                # There's a high chance that this fails, since
+                # we are getting the difference to fetch entities.
+                return
+
+            if not pts_date:
+                # First-time, can't get difference. Get pts instead.
+                result = await self(functions.messages.GetPeerDialogsRequest([
+                    utils.get_input_dialog(where)
+                ]))
+                self._state_cache[channel_id] = result.dialogs[0].pts
+                return
+
+            result = await self(functions.updates.GetChannelDifferenceRequest(
+                channel=where,
+                filter=types.ChannelMessagesFilterEmpty(),
+                pts=pts_date,  # just pts
+                limit=100,
+                force=True
+            ))
+        else:
+            if not pts_date[0]:
+                # First-time, can't get difference. Get pts instead.
+                result = await self(functions.updates.GetStateRequest())
+                self._state_cache[None] = result.pts, result.date
+                return
+
+            result = await self(functions.updates.GetDifferenceRequest(
+                pts=pts_date[0],
+                date=pts_date[1],
+                qts=0
+            ))
+
+        if isinstance(result, (types.updates.Difference,
+                               types.updates.DifferenceSlice,
+                               types.updates.ChannelDifference,
+                               types.updates.ChannelDifferenceTooLong)):
+            update._entities.update({
+                utils.get_peer_id(x): x for x in
+                itertools.chain(result.users, result.chats)
+            })
+
+    async def _handle_auto_reconnect(self: 'TelegramClient'):
+        # TODO Catch-up
+        return
         try:
-            __log__.info('Asking for the current state after reconnect...')
-            state = await self(functions.updates.GetStateRequest())
-            __log__.info('Got new state! %s', state)
+            self._log[__name__].info(
+                'Asking for the current state after reconnect...')
+
+            # TODO consider:
+            # If there aren't many updates while the client is disconnected
+            # (I tried with up to 20), Telegram seems to send them without
+            # asking for them (via updates.getDifference).
+            #
+            # On disconnection, the library should probably set a "need
+            # difference" or "catching up" flag so that any new updates are
+            # ignored, and then the library should call updates.getDifference
+            # itself to fetch them.
+            #
+            # In any case (either there are too many updates and Telegram
+            # didn't send them, or there isn't a lot and Telegram sent them
+            # but we dropped them), we fetch the new difference to get all
+            # missed updates. I feel like this would be the best solution.
+
+            # If a disconnection occurs, the old known state will be
+            # the latest one we were aware of, so we can catch up since
+            # the most recent state we were aware of.
+            await self.catch_up()
+
+            self._log[__name__].info('Successfully fetched missed updates')
         except errors.RPCError as e:
-            __log__.info('Failed to get current state: %r', e)
+            self._log[__name__].warning('Failed to get missed updates after '
+                                        'reconnect: %r', e)
+        except Exception:
+            self._log[__name__].exception('Unhandled exception while getting '
+                                          'update difference after reconnect')
 
     # endregion
+
+
+class EventBuilderDict:
+    """
+    Helper "dictionary" to return events from types and cache them.
+    """
+    def __init__(self, client: 'TelegramClient', update, others):
+        self.client = client
+        self.update = update
+        self.others = others
+
+    def __getitem__(self, builder):
+        try:
+            return self.__dict__[builder]
+        except KeyError:
+            event = self.__dict__[builder] = builder.build(self.update, self.others)
+            if isinstance(event, EventCommon):
+                event.original_update = self.update
+                event._entities = self.update._entities
+                event._set_client(self.client)
+            elif event:
+                event._client = self.client
+
+            return event

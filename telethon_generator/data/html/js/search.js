@@ -1,7 +1,7 @@
 root = document.getElementById("main_div");
 root.innerHTML = `
 <!-- You can append '?q=query' to the URL to default to a search -->
-<input id="searchBox" type="text" onkeyup="updateSearch()"
+<input id="searchBox" type="text" onkeyup="updateSearch(event)"
        placeholder="Search for requests and types…" />
 
 <div id="searchDiv">
@@ -11,17 +11,17 @@ root.innerHTML = `
         </ul>
     </div>
 
-    <details open><summary class="title">Methods (<span id="methodsCount">0</span>)</summary>
+    <details id="methods" open><summary class="title">Methods (<span id="methodsCount">0</span>)</summary>
         <ul id="methodsList" class="together">
         </ul>
     </details>
 
-    <details open><summary class="title">Types (<span id="typesCount">0</span>)</summary>
+    <details id="types" open><summary class="title">Types (<span id="typesCount">0</span>)</summary>
         <ul id="typesList" class="together">
         </ul>
     </details>
 
-    <details><summary class="title">Constructors (<span id="constructorsCount">0</span>)</summary>
+    <details id="constructors"><summary class="title">Constructors (<span id="constructorsCount">0</span>)</summary>
         <ul id="constructorsList" class="together">
         </ul>
     </details>
@@ -35,12 +35,15 @@ searchDiv = document.getElementById("searchDiv");
 searchBox = document.getElementById("searchBox");
 
 // Search lists
+methodsDetails = document.getElementById("methods");
 methodsList = document.getElementById("methodsList");
 methodsCount = document.getElementById("methodsCount");
 
+typesDetails = document.getElementById("types");
 typesList = document.getElementById("typesList");
 typesCount = document.getElementById("typesCount");
 
+constructorsDetails = document.getElementById("constructors");
 constructorsList = document.getElementById("constructorsList");
 constructorsCount = document.getElementById("constructorsCount");
 
@@ -78,32 +81,41 @@ if (typeof prependPath !== 'undefined') {
 }
 
 // Assumes haystack has no whitespace and both are lowercase.
+//
+// Returns the penalty for finding the needle in the haystack
+// or -1 if the needle wasn't found at all.
 function find(haystack, needle) {
-    if (needle.length == 0) {
-        return true;
+    if (haystack.indexOf(needle) != -1) {
+        return 0;
     }
     var hi = 0;
     var ni = 0;
+    var penalty = 0;
+    var started = false;
     while (true) {
         while (needle[ni] < 'a' || needle[ni] > 'z') {
             ++ni;
             if (ni == needle.length) {
-                return true;
+                return penalty;
             }
         }
         while (haystack[hi] != needle[ni]) {
             ++hi;
+            if (started) {
+                ++penalty;
+            }
             if (hi == haystack.length) {
-                return false;
+                return -1;
             }
         }
         ++hi;
         ++ni;
+        started = true;
         if (ni == needle.length) {
-            return true;
+            return penalty;
         }
         if (hi == haystack.length) {
-            return false;
+            return -1;
         }
     }
 }
@@ -117,7 +129,8 @@ function getSearchArray(original, originalu, query) {
     var destinationu = [];
 
     for (var i = 0; i < original.length; ++i) {
-        if (find(original[i].toLowerCase(), query)) {
+        var penalty = find(original[i].toLowerCase(), query);
+        if (penalty > -1 && penalty < original[i].length / 3) {
             destination.push(original[i]);
             destinationu.push(originalu[i]);
         }
@@ -143,46 +156,57 @@ function buildList(countSpan, resultList, foundElements) {
     resultList.innerHTML = result;
 }
 
-function updateSearch() {
-    if (searchBox.value) {
-        contentDiv.style.display = "none";
-        searchDiv.style.display = "";
-
-        var query = searchBox.value.toLowerCase();
-
-        var foundRequests = getSearchArray(requests, requestsu, query);
-        var foundTypes = getSearchArray(types, typesu, query);
-        var foundConstructors = getSearchArray(
-            constructors, constructorsu, query
-        );
-
-        buildList(methodsCount, methodsList, foundRequests);
-        buildList(typesCount, typesList, foundTypes);
-        buildList(constructorsCount, constructorsList, foundConstructors);
-
-        // Now look for exact matches
-        var original = requests.concat(constructors);
-        var originalu = requestsu.concat(constructorsu);
-        var destination = [];
-        var destinationu = [];
-
-        for (var i = 0; i < original.length; ++i) {
-            if (original[i].toLowerCase().replace("request", "") == query) {
-                destination.push(original[i]);
-                destinationu.push(originalu[i]);
-            }
-        }
-
-        if (destination.length == 0) {
-            exactMatch.style.display = "none";
-        } else {
-            exactMatch.style.display = "";
-            buildList(null, exactList, [destination, destinationu]);
-            return destinationu[0];
-        }
-    } else {
+function updateSearch(event) {
+    var query = searchBox.value.toLowerCase();
+    if (!query) {
         contentDiv.style.display = "";
         searchDiv.style.display = "none";
+        return;
+    }
+
+    contentDiv.style.display = "none";
+    searchDiv.style.display = "";
+
+    var foundRequests = getSearchArray(requests, requestsu, query);
+    var foundTypes = getSearchArray(types, typesu, query);
+    var foundConstructors = getSearchArray(constructors, constructorsu, query);
+
+    var original = requests.concat(constructors);
+    var originalu = requestsu.concat(constructorsu);
+    var destination = [];
+    var destinationu = [];
+
+    for (var i = 0; i < original.length; ++i) {
+        if (original[i].toLowerCase().replace("request", "") == query) {
+            destination.push(original[i]);
+            destinationu.push(originalu[i]);
+        }
+    }
+
+    if (event && event.keyCode == 13) {
+        if (destination.length != 0) {
+            window.location = destinationu[0];
+        } else if (methodsDetails.open && foundRequests[1].length) {
+            window.location = foundRequests[1][0];
+        } else if (typesDetails.open && foundTypes[1].length) {
+            window.location = foundTypes[1][0];
+        } else if (constructorsDetails.open && foundConstructors[1].length) {
+            window.location = foundConstructors[1][0];
+        }
+        return;
+    }
+
+    buildList(methodsCount, methodsList, foundRequests);
+    buildList(typesCount, typesList, foundTypes);
+    buildList(constructorsCount, constructorsList, foundConstructors);
+
+    // Now look for exact matches
+    if (destination.length == 0) {
+        exactMatch.style.display = "none";
+    } else {
+        exactMatch.style.display = "";
+        buildList(null, exactList, [destination, destinationu]);
+        return destinationu[0];
     }
 }
 
@@ -192,7 +216,19 @@ function getQuery(name) {
     for (var i = 0; i != vars.length; ++i) {
         var pair = vars[i].split("=");
         if (pair[0] == name)
-            return pair[1];
+            return decodeURI(pair[1]);
+    }
+}
+
+document.onkeydown = function (e) {
+    if (e.key == '/' || e.key == 's' || e.key == 'S') {
+        if (document.activeElement != searchBox) {
+            searchBox.focus();
+            return false;
+        }
+    } else if (e.key == '?') {
+        alert('Pressing any of: /sS\nWill focus the search bar\n\n' +
+              'Pressing: enter\nWill navigate to the first match')
     }
 }
 
