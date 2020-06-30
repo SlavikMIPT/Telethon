@@ -435,9 +435,10 @@ class Message(ChatGetter, SenderGetter, TLObject, abc.ABC):
         """
         The :tl:`WebPage` media in this message, if any.
         """
-        if isinstance(self.media, types.MessageMediaWebPage):
-            if isinstance(self.media.webpage, types.WebPage):
-                return self.media.webpage
+        if isinstance(self.media, types.MessageMediaWebPage) and isinstance(
+            self.media.webpage, types.WebPage
+        ):
+            return self.media.webpage
 
     @property
     def audio(self):
@@ -832,12 +833,11 @@ class Message(ChatGetter, SenderGetter, TLObject, abc.ABC):
             return  # Accessing the property sets self._buttons[_flat]
 
         if text is not None:
-            if callable(text):
-                for button in self._buttons_flat:
+            for button in self._buttons_flat:
+                if callable(text):
                     if text(button.text):
                         return await button.click()
-            else:
-                for button in self._buttons_flat:
+                else:
                     if button.text == text:
                         return await button.click()
             return

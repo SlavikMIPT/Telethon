@@ -268,18 +268,14 @@ class UploadMethods:
         # we may want to send as an album if all are photo files.
         if utils.is_list_like(file):
             image_captions = []
-            document_captions = []
-            if utils.is_list_like(caption):
-                captions = caption
-            else:
-                captions = [caption]
-
+            captions = caption if utils.is_list_like(caption) else [caption]
             # TODO Fix progress_callback
             images = []
             if force_document:
                 documents = file
             else:
                 documents = []
+                document_captions = []
                 for doc, cap in itertools.zip_longest(file, captions):
                     if utils.is_image(doc):
                         images.append(doc)
@@ -489,11 +485,7 @@ class UploadMethods:
         elif isinstance(file, bytes):
             file_size = len(file)
         else:
-            if isinstance(file, io.IOBase) and file.seekable():
-                pos = file.tell()
-            else:
-                pos = None
-
+            pos = file.tell() if isinstance(file, io.IOBase) and file.seekable() else None
             # TODO Don't load the entire file in memory always
             data = file.read()
             if pos is not None:
@@ -517,11 +509,7 @@ class UploadMethods:
         # Set a default file name if None was specified
         file_id = helpers.generate_random_long()
         if not file_name:
-            if isinstance(file, str):
-                file_name = os.path.basename(file)
-            else:
-                file_name = str(file_id)
-
+            file_name = os.path.basename(file) if isinstance(file, str) else str(file_id)
         # If the file name lacks extension, add it if possible.
         # Else Telegram complains with `PHOTO_EXT_INVALID_ERROR`
         # even if the uploaded image is indeed a photo.

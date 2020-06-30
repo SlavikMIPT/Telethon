@@ -492,11 +492,7 @@ class MessageMethods:
                 message_1337 = client.get_messages(chats, ids=1337)
         """
         if len(args) == 1 and 'limit' not in kwargs:
-            if 'min_id' in kwargs and 'max_id' in kwargs:
-                kwargs['limit'] = None
-            else:
-                kwargs['limit'] = 1
-
+            kwargs['limit'] = None if 'min_id' in kwargs and 'max_id' in kwargs else 1
         it = self.iter_messages(*args, **kwargs)
 
         ids = kwargs.get('ids')

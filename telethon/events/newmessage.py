@@ -124,9 +124,12 @@ class NewMessage(EventBuilder):
         # Make messages sent to ourselves outgoing unless they're forwarded.
         # This makes it consistent with official client's appearance.
         ori = event.message
-        if isinstance(ori.to_id, types.PeerUser):
-            if ori.from_id == ori.to_id.user_id and not ori.fwd_from:
-                event.message.out = True
+        if (
+            isinstance(ori.to_id, types.PeerUser)
+            and ori.from_id == ori.to_id.user_id
+            and not ori.fwd_from
+        ):
+            event.message.out = True
 
         return event
 
@@ -138,13 +141,16 @@ class NewMessage(EventBuilder):
             return
         if self.outgoing and not event.message.out:
             return
-        if self.forwards is not None:
-            if bool(self.forwards) != bool(event.message.fwd_from):
-                return
+        if self.forwards is not None and bool(self.forwards) != bool(
+            event.message.fwd_from
+        ):
+            return
 
-        if self.from_users is not None:
-            if event.message.from_id not in self.from_users:
-                return
+        if (
+            self.from_users is not None
+            and event.message.from_id not in self.from_users
+        ):
+            return
 
         if self.pattern:
             match = self.pattern(event.message.message or '')

@@ -309,8 +309,11 @@ class MTProtoSender:
                 await self._connect()
             except (IOError, asyncio.TimeoutError) as e:
                 last_error = e
-                self._log.info('Failed reconnection attempt %d with %s',
-                               attempt, e.__class__.__name__)
+                self._log.info(
+                    'Failed reconnection attempt %d with %s',
+                    attempt,
+                    last_error.__class__.__name__,
+                )
 
                 await asyncio.sleep(self._delay)
             except Exception as e:

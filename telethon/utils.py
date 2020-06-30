@@ -159,7 +159,7 @@ def get_input_peer(entity, allow_self=True, check_hash=True):
     if isinstance(entity, types.User):
         if entity.is_self and allow_self:
             return types.InputPeerSelf()
-        elif entity.access_hash is not None or not check_hash:
+        elif not (entity.access_hash is None and check_hash):
             return types.InputPeerUser(entity.id, entity.access_hash)
         else:
             raise TypeError('User without access_hash cannot be input')
@@ -168,11 +168,11 @@ def get_input_peer(entity, allow_self=True, check_hash=True):
         return types.InputPeerChat(entity.id)
 
     if isinstance(entity, (types.Channel, types.ChannelForbidden)):
-        if entity.access_hash is not None or not check_hash:
-            return types.InputPeerChannel(entity.id, entity.access_hash)
-        else:
+        if entity.access_hash is None and check_hash:
             raise TypeError('Channel without access_hash cannot be input')
 
+        else:
+            return types.InputPeerChannel(entity.id, entity.access_hash)
     if isinstance(entity, types.InputUser):
         return types.InputPeerUser(entity.user_id, entity.access_hash)
 

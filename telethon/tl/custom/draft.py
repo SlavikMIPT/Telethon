@@ -30,7 +30,7 @@ class Draft:
         self._entity = entity
         self._input_entity = get_input_peer(entity) if entity else None
 
-        if not draft or not isinstance(draft, DraftMessage):
+        if not (draft and isinstance(draft, DraftMessage)):
             draft = DraftMessage('', None, None, None, None)
 
         self._text = markdown.unparse(draft.message, draft.entities)

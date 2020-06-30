@@ -132,8 +132,6 @@ class DocsWriter:
         # Write all the arguments (or do nothing if there's none)
         for arg in tlobject.args:
             self.write(' ')
-            add_link = not arg.generic_definition and not arg.is_generic
-
             # "Opening" modifiers
             if arg.generic_definition:
                 self.write('{')
@@ -155,6 +153,8 @@ class DocsWriter:
 
             # Argument type
             if arg.type:
+                add_link = not (arg.generic_definition or arg.is_generic)
+
                 if add_link:
                     self.write('<a href="{}">', self.type_to_path(arg.type))
                 self.write(arg.type)

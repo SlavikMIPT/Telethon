@@ -140,7 +140,7 @@ def unparse(text, entities, delimiters=None, url_fmt=None):
     :param entities: the MessageEntity's applied to the text.
     :return: a markdown-like text representing the combination of both inputs.
     """
-    if not text or not entities:
+    if not (text and entities):
         return text
 
     if not delimiters:
